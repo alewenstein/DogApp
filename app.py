@@ -149,88 +149,60 @@ def get_all_guesses(conn: sqlite3.Connection):
         st.error(f"Error reading from database: {e}")
         return pd.DataFrame()
 
-def main():
-    st.set_page_config(page_title="Dog Name or Human Name?", layout="wide")
-    
-    st.title("Dog Name or Human Name?")
+def show_game_tab(data, db):
+    """Display the main game interface"""
     st.subheader("Guess whether each name is a human name, a dog name, or somewhere in between")
     st.write("If you get them all right, you get a treat!")
-    
-    # Initialize session state
-    if 'user_id' not in st.session_state:
-        st.session_state.user_id = str(uuid.uuid4())
-    if 'current_names' not in st.session_state:
-        st.session_state.current_names = None
-    if 'score' not in st.session_state:
-        st.session_state.score = {'correct': 0, 'total': 0}
-    if 'show_answers' not in st.session_state:
-        st.session_state.show_answers = False
-    if 'guesses_made' not in st.session_state:
-        st.session_state.guesses_made = {}
-    
-    # Load data
-    try:
-        data = get_processed_data()
-    except Exception as e:
-        st.error(f"Error loading data: {e}")
-        st.stop()
 
-    # Initialize SQLite database
-    try:
-        db = init_database()
-    except Exception as e:
-        st.warning("Database connection failed. Guesses won't be saved.")
-        db = None
-    
     # Generate new set of names if needed
     if st.session_state.current_names is None:
         st.session_state.current_names = data.sample(12).reset_index()
         st.session_state.show_answers = False
         st.session_state.guesses_made = {}
-    
+
     current_names = st.session_state.current_names
-    
+
     # Create columns for layout
     col1, col2 = st.columns([3, 1])
-    
+
     with col1:
         # Display names in a grid
         cols = st.columns(3)
-        
+
         for i in range(12):
             with cols[i % 3]:
                 name = current_names.loc[i, 'name']
                 st.subheader(name)
-                
+
                 guess = st.radio(
                     "Your guess:",
                     ["Dog", "Human", "Could be either"],
                     key=f"guess_{i}",
                     disabled=st.session_state.show_answers
                 )
-                
+
                 st.session_state.guesses_made[i] = guess
-                
+
                 if st.session_state.show_answers:
                     correct_answer = current_names.loc[i, 'dogginess_prop']
                     is_correct = guess == correct_answer
-                    
+
                     st.write(f"**Answer:** {correct_answer}")
                     if is_correct:
                         st.success("✓ Correct!")
                     else:
                         st.error("✗ Incorrect")
-    
+
     with col2:
         st.subheader("Score")
         st.write(f"Correct: {st.session_state.score['correct']}")
         st.write(f"Total: {st.session_state.score['total']}")
-        
+
         if not st.session_state.show_answers:
             if st.button("Submit", type="primary"):
                 # Calculate score
                 correct_count = 0
-                
+
                 for i in range(12):
                     guess = st.session_state.guesses_made.get(i)
                     if guess:
@@ -241,28 +213,167 @@ def main():
                         if db:
                             save_guess_to_db(db, st.session_state.user_id,
                                             name, guess, correct_answer)
-                        
+
                         if guess == correct_answer:
                             correct_count += 1
-                
+
                 # Update score
                 st.session_state.score['correct'] += correct_count
                 st.session_state.score['total'] += 12
                 st.session_state.show_answers = True
-                
+
                 st.rerun()
-        
+
         if st.button("Next Set of Names"):
             st.session_state.current_names = None
             st.session_state.show_answers = False
             st.session_state.guesses_made = {}
             st.rerun()
 
-    # Database stats and export section
-    if db:
-        st.divider()
-        st.subheader("Database Stats & Export")
+def show_name_lookup_tab(data):
+    """Display name lookup interface"""
+    st.subheader("Look up a specific name")
 
+    # Search box
+    search_name = st.text_input("Enter a name to search:", placeholder="e.g., MAX, BELLA, CHARLIE").upper()
+
+    if search_name:
+        result = data[data['name'] == search_name]
+
+        if not result.empty:
+            row = result.iloc[0]
+
+            # Display results in a nice format
+            st.success(f"✓ Found **{search_name}**")
+
+            col1, col2 = st.columns(2)
+
+            with col1:
+                st.metric("Classification", row['dogginess_prop'])
+                st.metric("Total People with Name", f"{int(row['people_tot']):,}")
+                st.metric("Total Dogs with Name", f"{int(row['dogs_tot']):,}")
+
+            with col2:
+                st.metric("Dog Angle (Total)", f"{int(row['dog_angle_tot'])}°")
+                st.metric("Dog Angle (Proportion)", f"{int(row['dog_angle_prop'])}°")
+                st.metric("Angle Difference", f"{int(row['angle_diff'])}°")
+
+            # Show explanation
+            st.divider()
+            st.write("**What does this mean?**")
+
+            if row['dogginess_prop'] == "Dog":
+                st.write(f"🐕 **{search_name}** is much more commonly used as a dog name than a human name!")
+            elif row['dogginess_prop'] == "Human":
+                st.write(f"👤 **{search_name}** is much more commonly used as a human name than a dog name!")
+            else:
+                st.write(f"🤷 **{search_name}** could go either way - it's popular for both dogs and humans!")
+
+        else:
+            st.warning(f"Name '{search_name}' not found in the dataset. Try another name!")
+
+            # Show some suggestions
+            st.write("**Popular names to try:**")
+            sample_names = data.nlargest(20, 'dogs_tot')['name'].sample(10).tolist()
+            st.write(", ".join(sample_names))
+
+def show_data_explorer_tab(data):
+    """Display data explorer with mobile-friendly visualizations"""
+    st.subheader("Explore the Dataset")
+
+    # Filters
+    st.write("**Filter by classification:**")
+    filter_type = st.multiselect(
+        "Select classifications to show:",
+        options=["Dog", "Human", "Could be either"],
+        default=["Dog", "Human", "Could be either"]
+    )
+
+    filtered_data = data[data['dogginess_prop'].isin(filter_type)]
+
+    # Summary stats
+    col1, col2, col3 = st.columns(3)
+    with col1:
+        st.metric("Total Names", len(filtered_data))
+    with col2:
+        dog_count = len(filtered_data[filtered_data['dogginess_prop'] == 'Dog'])
+        st.metric("Dog Names", dog_count)
+    with col3:
+        human_count = len(filtered_data[filtered_data['dogginess_prop'] == 'Human'])
+        st.metric("Human Names", human_count)
+
+    # Distribution chart
+    st.divider()
+    st.write("**Classification Distribution**")
+    classification_counts = filtered_data['dogginess_prop'].value_counts()
+    st.bar_chart(classification_counts)
+
+    # Top names
+    st.divider()
+    st.write("**Top Names by Category**")
+
+    view_by = st.radio("Sort by:", ["Most Popular (Dogs)", "Most Popular (People)", "Most Ambiguous"], horizontal=True)
+
+    if view_by == "Most Popular (Dogs)":
+        top_names = filtered_data.nlargest(20, 'dogs_tot')[['name', 'dogs_tot', 'people_tot', 'dogginess_prop']]
+        st.dataframe(
+            top_names.rename(columns={
+                'name': 'Name',
+                'dogs_tot': 'Total Dogs',
+                'people_tot': 'Total People',
+                'dogginess_prop': 'Classification'
+            }),
+            use_container_width=True,
+            hide_index=True
+        )
+    elif view_by == "Most Popular (People)":
+        top_names = filtered_data.nlargest(20, 'people_tot')[['name', 'people_tot', 'dogs_tot', 'dogginess_prop']]
+        st.dataframe(
+            top_names.rename(columns={
+                'name': 'Name',
+                'people_tot': 'Total People',
+                'dogs_tot': 'Total Dogs',
+                'dogginess_prop': 'Classification'
+            }),
+            use_container_width=True,
+            hide_index=True
+        )
+    else:  # Most Ambiguous
+        ambiguous = filtered_data[filtered_data['dogginess_prop'] == 'Could be either'].nlargest(20, 'dogs_tot')
+        st.dataframe(
+            ambiguous[['name', 'dogs_tot', 'people_tot', 'dog_angle_prop']].rename(columns={
+                'name': 'Name',
+                'dogs_tot': 'Total Dogs',
+                'people_tot': 'Total People',
+                'dog_angle_prop': 'Angle (closer to 45° = more ambiguous)'
+            }),
+            use_container_width=True,
+            hide_index=True
+        )
+
+    # Searchable full dataset
+    st.divider()
+    st.write("**Browse All Names**")
+    st.write(f"Showing {len(filtered_data)} names")
+
+    st.dataframe(
+        filtered_data[['name', 'dogginess_prop', 'dogs_tot', 'people_tot', 'dog_angle_prop']].sort_values('dogs_tot', ascending=False).rename(columns={
+            'name': 'Name',
+            'dogginess_prop': 'Classification',
+            'dogs_tot': 'Total Dogs',
+            'people_tot': 'Total People',
+            'dog_angle_prop': 'Angle'
+        }),
+        use_container_width=True,
+        hide_index=True,
+        height=400
+    )
+
+def show_results_database_tab(db):
+    """Display results database stats and export"""
+    st.subheader("Game Results Database")
+
+    if db:
         all_guesses = get_all_guesses(db)
 
         if not all_guesses.empty:
@@ -286,10 +397,59 @@ def main():
             )
 
             # Show recent results
-            with st.expander("View Recent Results"):
-                st.dataframe(all_guesses.head(50))
+            st.divider()
+            st.write("**Recent Results**")
+            st.dataframe(all_guesses.head(50), use_container_width=True)
         else:
             st.info("No guesses recorded yet. Play the game to start collecting data!")
+    else:
+        st.error("Database connection failed.")
+
+def main():
+    st.set_page_config(page_title="Dog Name or Human Name?", layout="wide")
+
+    st.title("🐕 Dog Name or Human Name?")
+
+    # Initialize session state
+    if 'user_id' not in st.session_state:
+        st.session_state.user_id = str(uuid.uuid4())
+    if 'current_names' not in st.session_state:
+        st.session_state.current_names = None
+    if 'score' not in st.session_state:
+        st.session_state.score = {'correct': 0, 'total': 0}
+    if 'show_answers' not in st.session_state:
+        st.session_state.show_answers = False
+    if 'guesses_made' not in st.session_state:
+        st.session_state.guesses_made = {}
+
+    # Load data
+    try:
+        data = get_processed_data()
+    except Exception as e:
+        st.error(f"Error loading data: {e}")
+        st.stop()
+
+    # Initialize SQLite database
+    try:
+        db = init_database()
+    except Exception as e:
+        st.warning("Database connection failed. Guesses won't be saved.")
+        db = None
+
+    # Create tabs
+    tab1, tab2, tab3, tab4 = st.tabs(["🎮 Play Game", "🔍 Name Lookup", "📊 Data Explorer", "💾 Results Database"])
+
+    with tab1:
+        show_game_tab(data, db)
+
+    with tab2:
+        show_name_lookup_tab(data)
+
+    with tab3:
+        show_data_explorer_tab(data)
+
+    with tab4:
+        show_results_database_tab(db)
 
 if __name__ == "__main__":
     main()
