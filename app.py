@@ -3,17 +3,32 @@ import pandas as pd
 import numpy as np
 import random
 import math
-from supabase import create_client, Client
+import sqlite3
 import uuid
 from datetime import datetime
 
-# Initialize Supabase client
-# You'll need to set these in Streamlit secrets
+# Initialize SQLite database
 @st.cache_resource
-def init_supabase():
-    url = st.secrets["supabase"]["url"]
-    key = st.secrets["supabase"]["anon_key"]
-    return create_client(url, key)
+def init_database():
+    """Create and initialize the SQLite database"""
+    conn = sqlite3.connect('dog_app_guesses.db', check_same_thread=False)
+    cursor = conn.cursor()
+
+    # Create table if it doesn't exist
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS guesses (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id TEXT NOT NULL,
+            name TEXT NOT NULL,
+            guess TEXT NOT NULL,
+            correct_answer TEXT NOT NULL,
+            is_correct INTEGER NOT NULL,
+            timestamp TEXT NOT NULL
+        )
+    ''')
+
+    conn.commit()
+    return conn
 
 def load_and_process_data():
     """Convert your R data processing to Python"""
@@ -103,22 +118,36 @@ def load_and_process_data():
 def get_processed_data():
     return load_and_process_data()
 
-def save_guess_to_db(supabase: Client, user_id: str, name: str, guess: str, correct_answer: str):
-    """Save user guess to database"""
+def save_guess_to_db(conn: sqlite3.Connection, user_id: str, name: str, guess: str, correct_answer: str):
+    """Save user guess to SQLite database"""
     try:
-        data = {
-            "user_id": user_id,
-            "name": name,
-            "guess": guess,
-            "correct_answer": correct_answer,
-            "is_correct": guess == correct_answer,
-            "timestamp": datetime.now().isoformat()
-        }
-        result = supabase.table("guesses").insert(data).execute()
+        cursor = conn.cursor()
+        cursor.execute('''
+            INSERT INTO guesses (user_id, name, guess, correct_answer, is_correct, timestamp)
+            VALUES (?, ?, ?, ?, ?, ?)
+        ''', (
+            user_id,
+            name,
+            guess,
+            correct_answer,
+            1 if guess == correct_answer else 0,
+            datetime.now().isoformat()
+        ))
+        conn.commit()
         return True
     except Exception as e:
         st.error(f"Error saving to database: {e}")
         return False
+
+def get_all_guesses(conn: sqlite3.Connection):
+    """Retrieve all guesses from the database as a DataFrame"""
+    try:
+        query = "SELECT * FROM guesses ORDER BY timestamp DESC"
+        df = pd.read_sql_query(query, conn)
+        return df
+    except Exception as e:
+        st.error(f"Error reading from database: {e}")
+        return pd.DataFrame()
 
 def main():
     st.set_page_config(page_title="Dog Name or Human Name?", layout="wide")
@@ -145,13 +174,13 @@ def main():
     except Exception as e:
         st.error(f"Error loading data: {e}")
         st.stop()
-    
-    # Initialize Supabase
+
+    # Initialize SQLite database
     try:
-        supabase = init_supabase()
+        db = init_database()
     except Exception as e:
         st.warning("Database connection failed. Guesses won't be saved.")
-        supabase = None
+        db = None
     
     # Generate new set of names if needed
     if st.session_state.current_names is None:
@@ -207,10 +236,10 @@ def main():
                     if guess:
                         correct_answer = current_names.loc[i, 'dogginess_prop']
                         name = current_names.loc[i, 'name']
-                        
+
                         # Save to database
-                        if supabase:
-                            save_guess_to_db(supabase, st.session_state.user_id, 
+                        if db:
+                            save_guess_to_db(db, st.session_state.user_id,
                                             name, guess, correct_answer)
                         
                         if guess == correct_answer:
@@ -228,6 +257,39 @@ def main():
             st.session_state.show_answers = False
             st.session_state.guesses_made = {}
             st.rerun()
+
+    # Database stats and export section
+    if db:
+        st.divider()
+        st.subheader("Database Stats & Export")
+
+        all_guesses = get_all_guesses(db)
+
+        if not all_guesses.empty:
+            col1, col2, col3 = st.columns(3)
+            with col1:
+                st.metric("Total Guesses", len(all_guesses))
+            with col2:
+                accuracy = (all_guesses['is_correct'].sum() / len(all_guesses) * 100)
+                st.metric("Overall Accuracy", f"{accuracy:.1f}%")
+            with col3:
+                unique_users = all_guesses['user_id'].nunique()
+                st.metric("Unique Players", unique_users)
+
+            # Download button for CSV export
+            csv = all_guesses.to_csv(index=False)
+            st.download_button(
+                label="Download All Results as CSV",
+                data=csv,
+                file_name="dog_app_results.csv",
+                mime="text/csv"
+            )
+
+            # Show recent results
+            with st.expander("View Recent Results"):
+                st.dataframe(all_guesses.head(50))
+        else:
+            st.info("No guesses recorded yet. Play the game to start collecting data!")
 
 if __name__ == "__main__":
     main()
