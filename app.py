@@ -49,10 +49,8 @@ def load_and_process_data():
         (~nyc_dogs['AnimalName'].str.contains(r'[^a-zA-Z\-]', na=False))
     ].copy()
     
+    dogs_filtered['dogs_in_year'] = dogs_filtered.groupby('AnimalBirthYear')['AnimalName'].transform('size')
     dogs_by_year = (dogs_filtered
-                   .groupby('AnimalBirthYear')
-                   .apply(lambda x: x.assign(dogs_in_year=len(x)))
-                   .reset_index(drop=True)
                    .groupby(['AnimalBirthYear', 'dogs_in_year', 'AnimalName'])
                    .size()
                    .reset_index(name='dogs'))
@@ -60,14 +58,11 @@ def load_and_process_data():
     dogs_by_year['dog_prop'] = round(100 * dogs_by_year['dogs'] / dogs_by_year['dogs_in_year'], 1)
     
     # Process human names data
-    human_names = (ny_names[ny_names['V3'] >= 1991]
-                  .groupby('V3')
-                  .apply(lambda x: x.assign(
-                      people_in_year=x['V5'].sum(),
-                      name=x['V4'].str.upper(),
-                      human_prop=round(100 * x['V5'] / x['V5'].sum(), 1)
-                  ))
-                  .reset_index(drop=True)
+    human_names = ny_names[ny_names['V3'] >= 1991].copy()
+    human_names['people_in_year'] = human_names.groupby('V3')['V5'].transform('sum')
+    human_names['name'] = human_names['V4'].str.upper()
+    human_names['human_prop'] = round(100 * human_names['V5'] / human_names['people_in_year'], 1)
+    human_names = (human_names
                   [['V3', 'people_in_year', 'name', 'human_prop', 'V5']]
                   .rename(columns={'V3': 'year', 'V5': 'people'}))
     
